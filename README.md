@@ -7,7 +7,11 @@
 ## What is this?
 
 Do things, particularly async things, on a regular interval.
-Treat the interval as a maximum rate, while also adjusting for drift.
+Avoid drift, by treating the interval as a maximum rate, adjusting for slow
+receivers, and dropping missed ticks if necessary.
+
+This implementation was inspired by Go's
+[time.NewTicker](https://pkg.go.dev/time#NewTicker).
 
 ## Usage
 
@@ -38,7 +42,8 @@ environments, including browsers, Node.js, and Deno.
 
 Creates an asynchronous ticker that yields Date objects at a specified
 interval. The ticker will adjust the interval or drop ticks, to make up for
-slow receivers.
+slow receivers. It avoids drift by using the time from the last tick as the
+basis for the next tick.
 
 #### Parameters
 

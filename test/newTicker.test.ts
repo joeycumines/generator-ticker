@@ -2,7 +2,7 @@
 import {jest} from '@jest/globals';
 // eslint-disable-next-line node/no-unpublished-import
 import {Chan, CloseOfClosedChannelError, yieldToMacrotaskQueue} from 'ts-chan';
-import {newTicker, tickerGenerator2} from '../src/newTicker';
+import {newTicker, tickerGenerator} from '../src/newTicker';
 
 describe('newTicker', () => {
   beforeEach(() => {
@@ -10,6 +10,55 @@ describe('newTicker', () => {
   });
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('should use the current time for yielded dates if the interval is 0', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate'],
+    });
+
+    const startedAt = Date.now();
+    const allOffsets: number[] = [];
+    const allDates: Date[] = [];
+
+    // start the ticker
+    const ticker = newTicker(0, 10, true);
+    // this should get picked up - the first tick will be startedAt
+    jest.advanceTimersByTime(1);
+
+    // test the ticker behavior, while concurrently receiving from the ticker
+    let running = true;
+    await Promise.all([
+      (async () => {
+        for await (const date of ticker) {
+          allDates.push(date);
+          allOffsets.push(date.getTime() - startedAt);
+        }
+        running = false;
+      })(),
+      (async () => {
+        try {
+          while (running) {
+            // increment the time
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(1);
+            await yieldToMacrotaskQueue();
+          }
+        } finally {
+          // stop the ticker
+          await expect(ticker.return()).resolves.toStrictEqual({
+            done: true,
+            value: undefined,
+          });
+        }
+      })(),
+    ]);
+
+    expect(allOffsets).toStrictEqual(Array.from({length: 10}, (_, i) => i));
+    expect(allDates.map(d => d.getTime() - startedAt)).toStrictEqual(
+      allOffsets
+    );
+    expect(new Set(allDates).size).toBe(allDates.length);
   });
 
   it('drops missed timers and adjusts for slow receivers', async () => {
@@ -63,31 +112,41 @@ describe('newTicker', () => {
 
           // increment past our interval by 1s - it will send our tick, and basically function as if the timer ran late
           // (because we didn't yield back to the event loop when the time was at the tick interval)
+          // even though the timer itself ran late, the tick will be the last "on time" one
           jest.advanceTimersByTime(1_001);
           await yieldToMacrotaskQueue();
           tick = chan.tryRecv();
-          expect(tick!.value!.getTime()).toBe(Date.now());
-          expect(tick!.value!.getTime()).toBe(firstTick + interval + 1_000);
+          expect(tick!.value!.getTime()).toBe(Date.now() - 1_000);
+          expect(tick!.value!.getTime()).toBe(firstTick + interval);
 
           // our next interval should be "on time", based on the last tick
-          jest.advanceTimersByTime(interval - 1);
+          jest.advanceTimersByTime(interval - 1000 - 1);
           await yieldToMacrotaskQueue();
           expect(chan.tryRecv()).toBeUndefined();
           jest.advanceTimersByTime(1);
           await yieldToMacrotaskQueue();
           tick = chan.tryRecv();
           expect(tick!.value!.getTime()).toBe(Date.now());
-          expect(tick!.value!.getTime()).toBe(firstTick + interval * 2 + 1_000);
-          const tickBeforeSlow = tick!.value!.getTime();
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 2);
 
+          // definitely nothing buffered or ready
           await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+          expect(chan.tryRecv()).toBeUndefined();
 
           // now we'll advance to the next tick, yield back to the event loop,
           // which will cause a tick to be sent to the channel, blocking iteration of the ticker
           jest.advanceTimersByTime(interval);
+          const tickBeforeSlow = Date.now();
           await yieldToMacrotaskQueue();
 
-          // advance again, to schedule the next tick, but don't yet receive it
+          // start the timer (normally we receive a value which gives it time to start)
+          await yieldToMacrotaskQueue();
+
+          // enqueue a tick we will be slow to receive
           jest.advanceTimersByTime(interval);
           await yieldToMacrotaskQueue();
 
@@ -97,30 +156,90 @@ describe('newTicker', () => {
 
           // receive the first tick we've buffered (the one that was to block the ticker)
           tick = chan.tryRecv();
-          expect(tick!.value!.getTime()).toBe(tickBeforeSlow + interval);
-
-          // buffer the tick from the ticker, the one we were slow receiving
-          await yieldToMacrotaskQueue();
-
-          // have to increment the timer to get progress
-          jest.advanceTimersByTime(1);
-          await yieldToMacrotaskQueue();
+          expect(tick!.value!.getTime()).toBe(tickBeforeSlow);
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 3);
 
           // now, lets receive the tick which was delayed - it will be a value exactly one interval from the prior tick, (interval - 100 in the past)
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
           tick = chan.tryRecv();
-          expect(tick!.value!.getTime()).toBe(Date.now());
-          expect(tick!.value!.getTime()).toBe(
-            tickBeforeSlow + interval * 3 - 100 + 1
-          );
-        } finally {
-          // stop the ticker
-          await expect(ticker.return()).resolves.toStrictEqual({
-            done: true,
-            value: undefined,
-          });
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 4);
+          expect(tick!.value!.getTime()).toBe(Date.now() - (interval - 100));
 
-          // unblock any send attempt
-          chan.close();
+          // advance to just before the next tick, just for sanity's sake
+          jest.advanceTimersByTime(99);
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+          expect(chan.tryRecv()).toBeUndefined();
+
+          // check we're back in sync
+          jest.advanceTimersByTime(1);
+          await yieldToMacrotaskQueue();
+          await yieldToMacrotaskQueue();
+          tick = chan.tryRecv();
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 5);
+          expect(tick!.value!.getTime()).toBe(Date.now());
+
+          // finally, let's test dropping ticks
+
+          // don't consume anything for 3*interval+1, to simulate dropping a tick
+          // 1. for buffering into chan
+          // 2. for blocking the ticker
+          // 3. to simulate the duration expiring
+          for (let i = 0; i < 3 * interval + 1; i++) {
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(1);
+            await yieldToMacrotaskQueue();
+          }
+
+          // our current time, for reference
+          expect(Date.now()).toBe(firstTick + interval * 8 + 1);
+
+          // receive the buffered tick
+          tick = chan.tryRecv();
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 6);
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+
+          // receive our dropped tick, which should be the current time - 1
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(0);
+          await yieldToMacrotaskQueue();
+          tick = chan.tryRecv();
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 8);
+          expect(tick!.value!.getTime()).toBe(Date.now() - 1);
+
+          // advance to just before the next tick
+          jest.advanceTimersByTime(interval - 2);
+          for (let i = 0; i < 10; i++) {
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(0);
+            await yieldToMacrotaskQueue();
+            expect(chan.tryRecv()).toBeUndefined();
+          }
+
+          // ...and we're back in sync
+          jest.advanceTimersByTime(1);
+          await yieldToMacrotaskQueue();
+          tick = chan.tryRecv();
+          expect(tick!.value!.getTime()).toBe(firstTick + interval * 9);
+          expect(tick!.value!.getTime()).toBe(Date.now());
+        } finally {
+          try {
+            // stop the ticker
+            await expect(ticker.return()).resolves.toStrictEqual({
+              done: true,
+              value: undefined,
+            });
+          } finally {
+            // unblock any send attempt
+            chan.close();
+          }
         }
       })(),
       (async () => {
@@ -137,18 +256,14 @@ describe('newTicker', () => {
       })(),
     ]);
 
-    expect(allOffsets).toStrictEqual([10000, 21000, 31000, 41000, 60901]);
+    expect(allOffsets).toStrictEqual([
+      10000, 20000, 30000, 40000, 50000, 60000, 70000, 90000, 100000,
+    ]);
   });
 
   it('should finish on abort', async () => {
     const abort = new AbortController();
-    const ticker = tickerGenerator2(
-      abort.signal,
-      10_000,
-      -1,
-      false,
-      new Date()
-    );
+    const ticker = tickerGenerator(abort.signal, 10_000, -1, false, new Date());
     const expectedError = Symbol('expected error');
     setTimeout(() => abort.abort(expectedError), 100);
     await expect(ticker.next()).resolves.toStrictEqual({
@@ -163,7 +278,7 @@ describe('newTicker', () => {
 
   it('should not bubble abort error on return if not handled via next if the generator was active', async () => {
     const abort = new AbortController();
-    const ticker = tickerGenerator2(abort.signal, 0, -1, false, new Date());
+    const ticker = tickerGenerator(abort.signal, 0, -1, false, new Date());
     await ticker.next();
     await new Promise(resolve => setTimeout(resolve, 50));
     abort.abort();
@@ -175,7 +290,7 @@ describe('newTicker', () => {
 
   it('should not bubble abort error on return if the generator was not active', async () => {
     const abort = new AbortController();
-    const ticker = tickerGenerator2(abort.signal, 0, -1, false, new Date());
+    const ticker = tickerGenerator(abort.signal, 0, -1, false, new Date());
     await new Promise(resolve => setTimeout(resolve, 50));
     abort.abort();
     await ticker.return();
@@ -184,7 +299,7 @@ describe('newTicker', () => {
   it('should not bubble abort error on return if the generator was not active even if the abort was preemptive', async () => {
     const abort = new AbortController();
     abort.abort();
-    const ticker = tickerGenerator2(abort.signal, 0, -1, false, new Date());
+    const ticker = tickerGenerator(abort.signal, 0, -1, false, new Date());
     await ticker.return();
   });
 
