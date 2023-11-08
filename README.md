@@ -1,7 +1,7 @@
 # generator-ticker
 
-[![NPM Package](https://img.shields.io/badge/NPM-ts--chan-brightgreen)](https://www.npmjs.com/package/generator-ticker)
-[![GitHub Repo](https://img.shields.io/badge/GitHub-ts--chan-blue)](https://github.com/joeycumines/generator-ticker)
+[![NPM Package](https://img.shields.io/badge/NPM-generator--ticker-brightgreen)](https://www.npmjs.com/package/generator-ticker)
+[![GitHub Repo](https://img.shields.io/badge/GitHub-generator--ticker-blue)](https://github.com/joeycumines/generator-ticker)
 [![Code Style: Google](https://img.shields.io/badge/code%20style-google-blueviolet.svg)](https://github.com/google/gts)
 
 ## What is this?
