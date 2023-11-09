@@ -1,6 +1,6 @@
 {
   "name": "generator-ticker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "An ES6 generator similar to setInterval that adjusts for slow receivers.",
   "repository": "joeycumines/generator-ticker",
   "keywords": [
