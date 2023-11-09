@@ -18,10 +18,15 @@ This implementation was inspired by Go's
 ```ts
 const {newTicker} = require('generator-ticker');
 
-// the last two parameters (count, initial) are optional
-for await (const tick of newTicker(1000, 10, true)) {
-  console.log(tick);
+// the last three parameters (count, initial, start) are optional
+for await (const tick of newTicker(500, 3, false, new Date(0))) {
+  console.log(`${tick.getSeconds()}s${tick.getMilliseconds()}ms\n`);
 }
+
+// will output something similar to:
+// 52s500ms
+// 53s0ms
+// 53s500ms
 ```
 
 ## Installation
@@ -47,11 +52,17 @@ basis for the next tick.
 
 #### Parameters
 
-*   `interval` **[number](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number)** The interval duration, in milliseconds.
+*   `interval` **[number](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number)** {number} The interval duration, in milliseconds.
     Must be a number >= 0.
-*   `count`  The number of times to tick. A negative value indicates an
-    unlimited number of times. Defaults to -1 (unlimited). (optional, default `-1`)
-*   `initial`  If true, the ticker will immediately yield the current
-    Date as the first tick. Defaults to false. (optional, default `false`)
+*   `count`  {number} The number of times to tick. A negative value
+    indicates an unlimited number of times. Defaults to -1 (unlimited). (optional, default `-1`)
+*   `initial`  {boolean} If true, the ticker will immediately yield the
+    current Date as the first tick. Defaults to false. (optional, default `false`)
+*   `start` **any?** {Date} The start time for the ticker. Defaults to the current
+    time. This is useful if you want to lock your ticker to certain wall times
+    (requires picking an interval that divides evenly into 24 hours).
+    This parameter interacts with the initial parameter. If initial is true,
+    the first tick will be at the start time. Otherwise, the first tick will
+    be at the start time + interval.
 
 Returns **AsyncGenerator<[Date](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Date), void>** An AsyncGenerator that yields Dates at the given interval.

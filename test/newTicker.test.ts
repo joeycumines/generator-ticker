@@ -12,55 +12,6 @@ describe('newTicker', () => {
     jest.useRealTimers();
   });
 
-  it('should use the current time for yielded dates if the interval is 0', async () => {
-    jest.useFakeTimers({
-      doNotFake: ['setImmediate'],
-    });
-
-    const startedAt = Date.now();
-    const allOffsets: number[] = [];
-    const allDates: Date[] = [];
-
-    // start the ticker
-    const ticker = newTicker(0, 10, true);
-    // this should get picked up - the first tick will be startedAt
-    jest.advanceTimersByTime(1);
-
-    // test the ticker behavior, while concurrently receiving from the ticker
-    let running = true;
-    await Promise.all([
-      (async () => {
-        for await (const date of ticker) {
-          allDates.push(date);
-          allOffsets.push(date.getTime() - startedAt);
-        }
-        running = false;
-      })(),
-      (async () => {
-        try {
-          while (running) {
-            // increment the time
-            await yieldToMacrotaskQueue();
-            jest.advanceTimersByTime(1);
-            await yieldToMacrotaskQueue();
-          }
-        } finally {
-          // stop the ticker
-          await expect(ticker.return()).resolves.toStrictEqual({
-            done: true,
-            value: undefined,
-          });
-        }
-      })(),
-    ]);
-
-    expect(allOffsets).toStrictEqual(Array.from({length: 10}, (_, i) => i));
-    expect(allDates.map(d => d.getTime() - startedAt)).toStrictEqual(
-      allOffsets
-    );
-    expect(new Set(allDates).size).toBe(allDates.length);
-  });
-
   it('drops missed timers and adjusts for slow receivers', async () => {
     jest.useFakeTimers({
       // used by ts-chan and this test
@@ -391,5 +342,250 @@ describe('newTicker', () => {
 
     const expectedYields = Math.floor(executionTime / rate);
     expect(yieldedCount).toBeGreaterThanOrEqual(expectedYields);
+  });
+
+  it('does not yield if count is 0', async () => {
+    const values: number[] = [];
+    for await (const value of newTicker(100, 0)) {
+      values.push(value.getTime());
+    }
+    expect(values).toStrictEqual([]);
+  });
+
+  it('does not yield if the generator was returned', async () => {
+    const values: number[] = [];
+    const gen = newTicker(100, 1);
+    void gen.return();
+    for await (const value of newTicker(100, 0)) {
+      values.push(value.getTime());
+    }
+    expect(values).toStrictEqual([]);
+  });
+
+  it('does not yield if the generator was thrown', async () => {
+    const values: number[] = [];
+    const gen = newTicker(100, 1);
+    void gen.throw('error').catch(() => undefined);
+    for await (const value of gen) {
+      values.push(value.getTime());
+    }
+    expect(values).toStrictEqual([]);
+  });
+
+  describe('should not yield until start even if interval is 0', () => {
+    test.each([true, false])('initial: %p', async initial => {
+      jest.useFakeTimers({
+        doNotFake: ['setImmediate'],
+      });
+
+      const startedAt = Date.now();
+      const allOffsets: number[] = [];
+      const allDates: Date[] = [];
+
+      // start the ticker
+      const ticker = newTicker(0, 3, initial, new Date(startedAt + 1000));
+
+      // test the ticker behavior, while concurrently receiving from the ticker
+      let running = true;
+      await Promise.all([
+        (async () => {
+          try {
+            for await (const date of ticker) {
+              const delta = Date.now() - date.getTime();
+              expect(delta).toBeGreaterThanOrEqual(0);
+              expect(delta).toBeLessThanOrEqual(3);
+              allDates.push(date);
+              allOffsets.push(date.getTime() - startedAt);
+            }
+          } finally {
+            running = false;
+          }
+        })(),
+        (async () => {
+          try {
+            while (running) {
+              // increment the time
+              await yieldToMacrotaskQueue();
+              jest.advanceTimersByTime(1);
+              await yieldToMacrotaskQueue();
+            }
+          } finally {
+            // stop the ticker
+            await expect(ticker.return()).resolves.toStrictEqual({
+              done: true,
+              value: undefined,
+            });
+          }
+        })(),
+      ]);
+
+      expect(allOffsets).toStrictEqual([1000, 1001, 1002]);
+      expect(allDates.map(d => d.getTime() - startedAt)).toStrictEqual(
+        allOffsets
+      );
+      expect(new Set(allDates).size).toBe(allDates.length);
+    });
+  });
+
+  describe('should use the current time for yielded dates if the interval is 0', () => {
+    test.each([true, false])('initial: %p', async initial => {
+      jest.useFakeTimers({
+        doNotFake: ['setImmediate'],
+      });
+
+      const startedAt = Date.now();
+      const allOffsets: number[] = [];
+      const allDates: Date[] = [];
+
+      // start the ticker
+      const ticker = newTicker(0, 10, initial);
+      // this should get picked up - won't start from offset 0
+      jest.advanceTimersByTime(5);
+
+      // test the ticker behavior, while concurrently receiving from the ticker
+      let running = true;
+      await Promise.all([
+        (async () => {
+          try {
+            let allowDiff = initial;
+            for await (const date of ticker) {
+              const delta = Date.now() - date.getTime();
+              expect(delta).toBeGreaterThanOrEqual(0);
+              if (allowDiff) {
+                allowDiff = false;
+                expect(delta).toBeGreaterThanOrEqual(5);
+                expect(delta).toBeLessThanOrEqual(8);
+              } else {
+                expect(delta).toBeLessThanOrEqual(3);
+              }
+              allDates.push(date);
+              allOffsets.push(date.getTime() - startedAt);
+            }
+          } finally {
+            running = false;
+          }
+        })(),
+        (async () => {
+          try {
+            while (running) {
+              // increment the time
+              await yieldToMacrotaskQueue();
+              jest.advanceTimersByTime(1);
+              await yieldToMacrotaskQueue();
+            }
+          } finally {
+            // stop the ticker
+            await expect(ticker.return()).resolves.toStrictEqual({
+              done: true,
+              value: undefined,
+            });
+          }
+        })(),
+      ]);
+
+      const expected = [6, 7, 8, 9, 10, 11, 12, 13, 14];
+      if (initial) {
+        expected.unshift(0);
+      } else {
+        expected.push(15);
+      }
+
+      expect(allOffsets).toStrictEqual(expected);
+      expect(allDates.map(d => d.getTime() - startedAt)).toStrictEqual(
+        allOffsets
+      );
+      expect(new Set(allDates).size).toBe(allDates.length);
+    });
+  });
+
+  describe('should correctly yield start in the future', () => {
+    test.each([true, false])('initial: %p', async initial => {
+      jest.useFakeTimers({
+        doNotFake: ['setImmediate'],
+      });
+
+      const chan = new Chan<Date>();
+
+      const interval = 10;
+
+      const startedAt = Date.now();
+      const allOffsets: number[] = [];
+
+      const startOffset = 1000;
+      const firstTickOffset = startOffset + (initial ? 0 : interval);
+      const ticker = newTicker(interval, -1, initial, startedAt + startOffset);
+      await Promise.all([
+        (async () => {
+          try {
+            // just before the first tick
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(firstTickOffset - 1);
+            await yieldToMacrotaskQueue();
+            expect(chan.tryRecv()).toBeUndefined();
+
+            // first tick
+            jest.advanceTimersByTime(1);
+            await yieldToMacrotaskQueue();
+            let tick = chan.tryRecv();
+            expect(tick).not.toBeUndefined();
+            expect(tick?.value?.getTime()).toBe(startedAt + firstTickOffset);
+            expect(tick?.value?.getTime()).toBe(Date.now());
+
+            // subsequent ticks as per normal
+
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(interval - 1);
+            await yieldToMacrotaskQueue();
+            expect(chan.tryRecv()).toBeUndefined();
+
+            jest.advanceTimersByTime(1);
+            await yieldToMacrotaskQueue();
+            tick = chan.tryRecv();
+            expect(tick).not.toBeUndefined();
+            expect(tick?.value?.getTime()).toBe(
+              startedAt + firstTickOffset + interval
+            );
+            expect(tick?.value?.getTime()).toBe(Date.now());
+
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(interval);
+            await yieldToMacrotaskQueue();
+            tick = chan.tryRecv();
+            expect(tick).not.toBeUndefined();
+            expect(tick?.value?.getTime()).toBe(
+              startedAt + firstTickOffset + interval * 2
+            );
+            expect(tick?.value?.getTime()).toBe(Date.now());
+          } finally {
+            try {
+              await expect(ticker.return()).resolves.toStrictEqual({
+                done: true,
+                value: undefined,
+              });
+            } finally {
+              chan.close();
+            }
+          }
+        })(),
+        (async () => {
+          for await (const date of ticker) {
+            try {
+              await chan.send(date);
+            } catch (e) {
+              if (!(e instanceof CloseOfClosedChannelError)) {
+                throw e;
+              }
+            }
+            allOffsets.push(date.getTime() - startedAt);
+          }
+        })(),
+      ]);
+
+      expect(allOffsets).toStrictEqual([
+        firstTickOffset,
+        firstTickOffset + interval,
+        firstTickOffset + interval * 2,
+      ]);
+    });
   });
 });

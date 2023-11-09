@@ -4,19 +4,26 @@
  * slow receivers. It avoids drift by using the time from the last tick as the
  * basis for the next tick.
  *
- * @param interval - The interval duration, in milliseconds.
+ * @param interval {number} The interval duration, in milliseconds.
  *   Must be a number >= 0.
- * @param count - The number of times to tick. A negative value indicates an
- *   unlimited number of times. Defaults to -1 (unlimited).
- * @param initial - If true, the ticker will immediately yield the current
- *   Date as the first tick. Defaults to false.
+ * @param count {number} The number of times to tick. A negative value
+ *   indicates an unlimited number of times. Defaults to -1 (unlimited).
+ * @param initial {boolean} If true, the ticker will immediately yield the
+ *   current Date as the first tick. Defaults to false.
+ * @param start {Date} The start time for the ticker. Defaults to the current
+ *   time. This is useful if you want to lock your ticker to certain wall times
+ *   (requires picking an interval that divides evenly into 24 hours).
+ *   This parameter interacts with the initial parameter. If initial is true,
+ *   the first tick will be at the start time. Otherwise, the first tick will
+ *   be at the start time + interval.
  *
  * @returns An AsyncGenerator that yields Dates at the given interval.
  */
 export const newTicker = (
   interval: number,
   count = -1,
-  initial = false
+  initial = false,
+  start?: ConstructorParameters<typeof Date>[0]
 ): AsyncGenerator<Date, void> => {
   if (
     typeof (interval as unknown) !== 'number' ||
@@ -31,13 +38,16 @@ export const newTicker = (
     throw new TypeError('newTicker: count must be a safe integer value');
   }
 
-  // so we can "start" immediately - not on the first call to gen.next()
-  const tick = new Date();
-
   const abort = new AbortController();
   return new TickerGenerator(
     abort,
-    tickerGenerator(abort.signal, interval, count, initial, tick)
+    tickerGenerator(
+      abort.signal,
+      interval,
+      count,
+      initial,
+      start !== undefined ? new Date(start) : new Date()
+    )
   );
 };
 
@@ -83,9 +93,14 @@ export async function* tickerGenerator(
   }
 
   if (initial) {
-    yield tick;
-    if (count > 0) {
-      count--;
+    if (Date.now() >= tick.getTime()) {
+      yield tick;
+      if (count > 0) {
+        count--;
+      }
+    } else {
+      // the tick is in the future - adjust it backwards, so the first tick will be our start time
+      tick.setTime(tick.getTime() - interval);
     }
   }
 
@@ -93,15 +108,6 @@ export async function* tickerGenerator(
   while (count !== 0 && !abort.aborted) {
     // determine the diff from the last yielded tick
     diff = tick.getTime() - Date.now() + interval;
-    if (interval === 0) {
-      tick = new Date();
-    } else if (diff < -interval) {
-      // drop missed ticks, but still use the diff as the timeout
-      // this simulates a make(chan time.Time, 1) being sent on an interval in Go
-      tick = new Date(tick.getTime() - Math.floor(diff / interval) * interval);
-    } else {
-      tick = new Date(tick.getTime() + interval);
-    }
 
     // wait for the next tick
     let id: ReturnType<typeof setTimeout> | undefined;
@@ -124,6 +130,19 @@ export async function* tickerGenerator(
     // guard against aborts
     if (abort.aborted) {
       break;
+    }
+
+    if (interval === 0) {
+      tick = new Date();
+    } else if (diff < -interval) {
+      // this simulates a make(chan time.Time, 1) being sent on an interval in Go
+      // ("drops" missed ticks, by skipping / not yielding 1-n ticks)
+      // NOTE: diff was calculated using the time after yielding back, before
+      // waiting for the next tick - ergo, the calculation below should always
+      // result in a tick less than or equal to the current time
+      tick = new Date(tick.getTime() - Math.floor(diff / interval) * interval);
+    } else {
+      tick = new Date(tick.getTime() + interval);
     }
 
     yield tick;
