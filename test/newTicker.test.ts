@@ -588,4 +588,80 @@ describe('newTicker', () => {
       ]);
     });
   });
+
+  test('start time in the past should not immediately yield if initial was not set', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate'],
+    });
+
+    const chan = new Chan<Date>();
+
+    const interval = 10;
+
+    const startedAt = Date.now();
+    const allOffsets: number[] = [];
+
+    const startOffset = -1001;
+
+    const ticker = newTicker(interval, -1, false, startedAt + startOffset);
+
+    await Promise.all([
+      (async () => {
+        try {
+          // just before the first tick
+          await yieldToMacrotaskQueue();
+          jest.advanceTimersByTime(8);
+          await yieldToMacrotaskQueue();
+          expect(chan.tryRecv()).toBeUndefined();
+
+          // subsequent ticks as per normal
+
+          jest.advanceTimersByTime(1);
+          await yieldToMacrotaskQueue();
+          let tick = chan.tryRecv();
+          expect(tick).not.toBeUndefined();
+          expect(tick?.value?.getTime()).toBe(startedAt + 9);
+          expect(tick?.value?.getTime()).toBe(Date.now());
+
+          for (let i = 0; i < interval - 1; i++) {
+            // just before the first tick
+            await yieldToMacrotaskQueue();
+            jest.advanceTimersByTime(1);
+            await yieldToMacrotaskQueue();
+            expect(chan.tryRecv()).toBeUndefined();
+          }
+
+          jest.advanceTimersByTime(2);
+          await yieldToMacrotaskQueue();
+          tick = chan.tryRecv();
+          expect(tick).not.toBeUndefined();
+          expect(tick?.value?.getTime()).toBe(startedAt + 9 + interval);
+          expect(tick?.value?.getTime()).toBe(Date.now() - 1);
+        } finally {
+          try {
+            await expect(ticker.return()).resolves.toStrictEqual({
+              done: true,
+              value: undefined,
+            });
+          } finally {
+            chan.close();
+          }
+        }
+      })(),
+      (async () => {
+        for await (const date of ticker) {
+          try {
+            await chan.send(date);
+          } catch (e) {
+            if (!(e instanceof CloseOfClosedChannelError)) {
+              throw e;
+            }
+          }
+          allOffsets.push(date.getTime() - startedAt);
+        }
+      })(),
+    ]);
+
+    expect(allOffsets).toStrictEqual([9, 19]);
+  });
 });

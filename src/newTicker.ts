@@ -92,6 +92,8 @@ export async function* tickerGenerator(
     return;
   }
 
+  let diff: number;
+
   if (initial) {
     if (Date.now() >= tick.getTime()) {
       yield tick;
@@ -102,12 +104,18 @@ export async function* tickerGenerator(
       // the tick is in the future - adjust it backwards, so the first tick will be our start time
       tick.setTime(tick.getTime() - interval);
     }
+  } else if (interval !== 0) {
+    diff = calcDiff(tick, interval);
+    if (diff < -interval) {
+      // special case to drop initial ticks that are too far in the past
+      // (avoid yielding immediately if the initial tick is in the past)
+      tick = calcDroppedTick(tick, interval, diff);
+    }
   }
 
-  let diff: number;
   while (count !== 0 && !abort.aborted) {
     // determine the diff from the last yielded tick
-    diff = tick.getTime() - Date.now() + interval;
+    diff = calcDiff(tick, interval);
 
     // wait for the next tick
     let id: ReturnType<typeof setTimeout> | undefined;
@@ -140,7 +148,7 @@ export async function* tickerGenerator(
       // NOTE: diff was calculated using the time after yielding back, before
       // waiting for the next tick - ergo, the calculation below should always
       // result in a tick less than or equal to the current time
-      tick = new Date(tick.getTime() - Math.floor(diff / interval) * interval);
+      tick = calcDroppedTick(tick, interval, diff);
     } else {
       tick = new Date(tick.getTime() + interval);
     }
@@ -151,3 +159,9 @@ export async function* tickerGenerator(
     }
   }
 }
+
+const calcDiff = (tick: Date, interval: number) =>
+  tick.getTime() - Date.now() + interval;
+
+const calcDroppedTick = (tick: Date, interval: number, diff: number) =>
+  new Date(tick.getTime() - Math.floor(diff / interval) * interval);
